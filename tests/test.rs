@@ -336,15 +336,15 @@ fn special_chrs_ods() {
 }
 
 // Test for decoding/unescaping simple XML entities. A2 is `&#xA;` (newline
-// character reference) — without xml:space="preserve" it is trimmed like any
-// other edge whitespace.
+// character reference). OneSchema fork: <t> text is kept verbatim, so it
+// stays a newline even without xml:space="preserve".
 #[test]
 fn decode_xml_entities() {
     let mut excel: Xlsx<_> = wb("encoded_entities.xlsx");
     let range = excel.worksheet_range("Sheet1").unwrap();
 
     assert_eq!(range.get_value((0, 0)), Some(&String("&".to_string())));
-    assert_eq!(range.get_value((1, 0)), Some(&String("".to_string())));
+    assert_eq!(range.get_value((1, 0)), Some(&String("\n".to_string())));
 }
 
 // Test for unescaping Excel XML escapes in a cell string. Excel encodes a
@@ -3627,20 +3627,20 @@ fn test_hyperlinks_xlsx_escaped_attributes() {
 
 #[test]
 fn test_whitespace_trim_inline_str() {
-    // inlineStr cells: whitespace trimmed unless xml:space="preserve"
+    // inlineStr cells: OneSchema fork keeps <t> text verbatim (no trimming)
     let mut excel: Xlsx<_> = wb("whitespace_trim.xlsx");
     let range = excel.worksheet_range("inlineStr").unwrap();
 
     // Row 1
-    // A1: raw "<t>  trimmed value  </t>" → trimmed
+    // A1: raw "<t>  trimmed value  </t>" → kept as-is
     assert_eq!(
         range.get_value((0, 0)),
-        Some(&String("trimmed value".to_string()))
+        Some(&String("  trimmed value  ".to_string()))
     );
-    // B1: raw "<t>\n\tvalue with tabs\n</t>" → trimmed
+    // B1: raw "<t>\t\n value with tabs \n</t>" → kept as-is
     assert_eq!(
         range.get_value((0, 1)),
-        Some(&String("value with tabs".to_string()))
+        Some(&String("\t\n value with tabs \n".to_string()))
     );
     // C1: raw "<t xml:space="preserve"> \t\n</t>" → preserved as-is
     assert_eq!(range.get_value((0, 2)), Some(&String(" \t\n".to_string())));
@@ -3651,10 +3651,10 @@ fn test_whitespace_trim_inline_str() {
     );
 
     // Row 2: multi-line text
-    // A2: raw "<t>  line1\nline2  </t>" → trimmed (inner newline preserved)
+    // A2: raw "<t>  line1\nline2  </t>" → kept as-is
     assert_eq!(
         range.get_value((1, 0)),
-        Some(&String("line1\nline2".to_string()))
+        Some(&String("  line1\nline2  ".to_string()))
     );
     // B2: raw "<t xml:space="preserve">  line1\nline2  </t>" → preserved as-is
     assert_eq!(
@@ -3673,23 +3673,23 @@ fn test_whitespace_trim_inline_str() {
 
 #[test]
 fn test_whitespace_trim_shared_strings() {
-    // shared string cells: whitespace trimmed unless xml:space="preserve"
+    // shared string cells: OneSchema fork keeps <t> text verbatim (no trimming)
     let mut excel: Xlsx<_> = wb("whitespace_trim.xlsx");
     let range = excel.worksheet_range("SharedStrings").unwrap();
 
     // Row 1
-    // idx 0: raw "<t>  trimmed value</t>" → trimmed
+    // idx 0: raw "<t>  trimmed value</t>" → kept as-is
     assert_eq!(
         range.get_value((0, 0)),
-        Some(&String("trimmed value".to_string()))
+        Some(&String("  trimmed value".to_string()))
     );
     // idx 1: raw "<t xml:space="preserve">  preserved value  </t>" → preserved as-is
     assert_eq!(
         range.get_value((0, 1)),
         Some(&String("  preserved value  ".to_string()))
     );
-    // idx 2: raw "<t> \t\n</t>" → trimmed to empty string
-    assert_eq!(range.get_value((0, 2)), Some(&String("".to_string())));
+    // idx 2: raw "<t> \t\n</t>" → kept as-is
+    assert_eq!(range.get_value((0, 2)), Some(&String(" \t\n".to_string())));
     // idx 3: raw "<t>clean text</t>" → no change
     assert_eq!(
         range.get_value((0, 3)),
@@ -3697,10 +3697,10 @@ fn test_whitespace_trim_shared_strings() {
     );
 
     // Row 2: multi-line text
-    // idx 4: raw "<t>  line1\nline2  </t>" → trimmed (inner newline preserved)
+    // idx 4: raw "<t>  line1\nline2  </t>" → kept as-is
     assert_eq!(
         range.get_value((1, 0)),
-        Some(&String("line1\nline2".to_string()))
+        Some(&String("  line1\nline2  ".to_string()))
     );
     // idx 5: raw "<t xml:space="preserve">  line1\nline2  </t>" → preserved as-is
     assert_eq!(
