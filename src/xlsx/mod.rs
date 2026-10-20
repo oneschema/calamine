@@ -4616,6 +4616,55 @@ mod tests {
         assert_eq!("String 2", &xlsx.strings[1]);
         assert_eq!("String 3", &xlsx.strings[2]);
     }
+
+    #[test]
+    fn test_read_shared_strings_surrogate_split_across_runs() {
+        let shared_strings_data = br#"<?xml version="1.0" encoding="utf-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+    <si><r><t>a_xD83D_</t></r><r><t>_xDCF7_b</t></r></si>
+    <si><r><t>_xD83D_</t></r></si>
+    <si><r><t>_xD83D_</t></r><rPh sb="0" eb="1"><t>x</t></rPh><r><t>_xDCF7_</t></r></si>
+</sst>"#;
+
+        let mut buf = [0; 1000];
+        let mut zip_writer = ZipWriter::new(std::io::Cursor::new(&mut buf[..]));
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip_writer
+            .start_file("xl/sharedStrings.xml", options)
+            .unwrap();
+        zip_writer.write_all(shared_strings_data).unwrap();
+        let zip_size = zip_writer.finish().unwrap().position() as usize;
+
+        let zip = ZipArchive::new(std::io::Cursor::new(&buf[..zip_size])).unwrap();
+        let zip_path_cache = build_zip_path_cache(&zip).unwrap();
+        let mut xlsx = Xlsx {
+            zip,
+            xl_path: "xl/".to_string(),
+            strings: vec![],
+            sheets: vec![],
+            tables: None,
+            formats: vec![],
+            is_1904: false,
+            metadata: Metadata::default(),
+            workbook_properties: None,
+            #[cfg(feature = "picture")]
+            pictures: None,
+            merged_regions: None,
+            options: XlsxOptions::default(),
+            zip_path_cache,
+        };
+
+        assert!(xlsx.read_shared_strings().is_ok());
+        assert_eq!(
+            xlsx.strings,
+            vec![
+                "a\u{1F4F7}b".to_string(),
+                "\u{FFFD}".to_string(),
+                "\u{1F4F7}".to_string(),
+            ]
+        );
+    }
 }
 
 /// Read the package core properties (`docProps/core.xml`).
