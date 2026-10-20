@@ -24,7 +24,8 @@ use crate::attrs::{decode_attr, local_name_matches, RawAttributes};
 use crate::datatype::DataRef;
 use crate::formats::{builtin_format_by_id, detect_custom_number_format, CellFormat};
 use crate::utils::{
-    build_zip_path_cache, cached_zip_path, unescape_entity_to_buffer, unescape_xml,
+    build_zip_path_cache, cached_zip_path, flush_pending_surrogate, unescape_entity_to_buffer,
+    unescape_xml, unescape_xml_into,
 };
 use crate::vba::VbaProject;
 #[cfg(feature = "picture")]
@@ -2937,6 +2938,7 @@ where
     RS: Read + Seek,
 {
     let mut rich_buffer: Option<String> = None;
+    let mut pending_high_surrogate = None;
     let mut is_phonetic_text = false;
     loop {
         xml_buf.clear();
@@ -2949,6 +2951,9 @@ where
                 is_phonetic_text = true;
             }
             Ok(Event::End(e)) if e.name() == closing => {
+                if let Some(s) = &mut rich_buffer {
+                    flush_pending_surrogate(s, &mut pending_high_surrogate);
+                }
                 if rich_buffer.is_none() {
                     // An empty <s></s> element, without <t> or other
                     // subelements, is treated as a valid empty string in Excel.
@@ -2976,12 +2981,10 @@ where
                 // OneSchema: keep <t> text verbatim regardless of xml:space, to
                 // match SheetJS (reverts the trimming from upstream #671/#673).
                 let _ = preserve_space;
-                let value = unescape_xml(&value).into_owned();
-                if let Some(s) = &mut rich_buffer {
-                    s.push_str(&value);
-                } else {
-                    rich_buffer = Some(value);
-                }
+                // Rich text runs are joined as UTF-16, as in Excel and SheetJS, so a
+                // surrogate pair split across two runs still forms one character.
+                let s = rich_buffer.get_or_insert_with(String::new);
+                unescape_xml_into(&value, s, &mut pending_high_surrogate);
             }
             Ok(Event::Eof) => return Err(XlsxError::XmlEof("")),
             Err(e) => return Err(XlsxError::Xml(e)),

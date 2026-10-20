@@ -134,6 +134,27 @@ pub(crate) fn unescape_xml(original: &str) -> Cow<'_, str> {
     }
 
     let mut escaped_string = String::with_capacity(original.len());
+    let mut pending_high = None;
+    let has_changes = unescape_xml_into(original, &mut escaped_string, &mut pending_high);
+    flush_pending_surrogate(&mut escaped_string, &mut pending_high);
+
+    if has_changes {
+        Cow::Owned(escaped_string)
+    } else {
+        Cow::Borrowed(original)
+    }
+}
+
+// Append `original` to `out` with `_xHHHH_` escapes decoded, returning whether
+// any escape was decoded. A high surrogate escape at the end of `original` is
+// kept in `pending_high`, so that a rich text run ending in a high surrogate
+// and the next run starting with a low surrogate still form one character.
+// Call `flush_pending_surrogate` after the last run.
+pub(crate) fn unescape_xml_into(
+    original: &str,
+    out: &mut String,
+    pending_high: &mut Option<u16>,
+) -> bool {
     let mut i = 0;
     let mut has_changes = false;
 
@@ -142,38 +163,42 @@ pub(crate) fn unescape_xml(original: &str) -> Cow<'_, str> {
             i += UNICODE_ESCAPE_LENGTH;
             has_changes = true;
 
-            let ch = if (0xD800..0xDC00).contains(&unit) {
-                match parse_utf16_escape(original, i) {
-                    Some(low @ 0xDC00..=0xDFFF) => {
-                        i += UNICODE_ESCAPE_LENGTH;
-                        let code_point = 0x10000
-                            + ((u32::from(unit) - 0xD800) << 10)
-                            + (u32::from(low) - 0xDC00);
-                        char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER)
-                    }
-                    _ => char::REPLACEMENT_CHARACTER,
+            if let Some(high) = pending_high.take() {
+                if (0xDC00..=0xDFFF).contains(&unit) {
+                    let code_point =
+                        0x10000 + ((u32::from(high) - 0xD800) << 10) + (u32::from(unit) - 0xDC00);
+                    out.push(char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER));
+                    continue;
                 }
+                out.push(char::REPLACEMENT_CHARACTER);
+            }
+
+            if (0xD800..0xDC00).contains(&unit) {
+                *pending_high = Some(unit);
             } else {
-                char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER)
-            };
-            escaped_string.push(ch);
+                out.push(char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER));
+            }
             continue;
         }
 
         // Not an escape sequence, so we copy the current UTF-8 character.
         match original[i..].chars().next() {
             Some(ch) => {
-                escaped_string.push(ch);
+                flush_pending_surrogate(out, pending_high);
+                out.push(ch);
                 i += ch.len_utf8();
             }
             None => break,
         }
     }
 
-    if has_changes {
-        Cow::Owned(escaped_string)
-    } else {
-        Cow::Borrowed(original)
+    has_changes
+}
+
+// Replace an unpaired high surrogate left by `unescape_xml_into` with U+FFFD.
+pub(crate) fn flush_pending_surrogate(out: &mut String, pending_high: &mut Option<u16>) {
+    if pending_high.take().is_some() {
+        out.push(char::REPLACEMENT_CHARACTER);
     }
 }
 
@@ -1324,6 +1349,30 @@ mod tests {
 
         for (input, expected) in test_cases {
             assert_eq!(unescape_xml(input), expected);
+        }
+    }
+
+    #[test]
+    fn xml_with_escapes_across_runs() {
+        let test_cases: Vec<(&[&str], &str)> = vec![
+            (&["_xD83D_", "_xDCF7_"], "\u{1F4F7}"),
+            (&["a_xD83D_", "_xDCF7_b"], "a\u{1F4F7}b"),
+            (&["_xD83D_", "", "_xDCF7_"], "\u{1F4F7}"),
+            (&["_xD83D_", "b"], "\u{FFFD}b"),
+            (&["_xD83D_", "_x0041_"], "\u{FFFD}A"),
+            (&["_xD83D_"], "\u{FFFD}"),
+            (&["_xDCF7_", "_xD83D_"], "\u{FFFD}\u{FFFD}"),
+            (&["_x27", "64_"], "_x2764_"),
+        ];
+
+        for (runs, expected) in test_cases {
+            let mut out = String::new();
+            let mut pending_high = None;
+            for run in runs {
+                unescape_xml_into(run, &mut out, &mut pending_high);
+            }
+            flush_pending_surrogate(&mut out, &mut pending_high);
+            assert_eq!(out, expected, "runs {runs:?}");
         }
     }
 }
