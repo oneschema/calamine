@@ -2306,6 +2306,88 @@ fn xlsx_cell_reader_expands_excel_resaved_shared_formulas() {
 }
 
 #[test]
+fn xlsx_cell_reader_returns_raw_style_indices() {
+    let mut excel: Xlsx<_> = wb("date.xlsx");
+    let mut reader = excel.worksheet_cells_reader("Sheet1").unwrap();
+    let mut cells = Vec::new();
+    while let Some(cell) = reader.next_cell().unwrap() {
+        cells.push((cell.get_position(), cell.get_value().clone()));
+    }
+
+    let mut excel: Xlsx<_> = wb("date.xlsx");
+    let mut reader = excel.worksheet_cells_reader("Sheet1").unwrap();
+    let mut styled_cells = Vec::new();
+    while let Some((cell, style)) = reader.next_cell_with_style().unwrap() {
+        styled_cells.push((cell.get_position(), cell.get_value().clone(), style));
+    }
+
+    assert_eq!(
+        cells,
+        styled_cells
+            .iter()
+            .map(|(pos, value, _style)| (*pos, value.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        styled_cells
+            .iter()
+            .map(|(pos, _, style)| (*pos, *style))
+            .collect::<Vec<_>>(),
+        [
+            ((0, 0), Some(1)),
+            ((0, 1), Some(2)),
+            ((1, 0), Some(1)),
+            ((1, 1), Some(2)),
+            ((2, 0), Some(3)),
+            ((2, 1), Some(0)),
+        ]
+    );
+
+    let mut excel: Xlsx<_> = wb("shared_formula_simple.xlsx");
+    let mut reader = excel.worksheet_cells_reader("Sheet1").unwrap();
+    let (cell, style) = reader.next_cell_with_style().unwrap().unwrap();
+    assert_eq!(cell.get_position(), (0, 0));
+    assert_eq!(style, None);
+
+    let mut excel: Xlsx<_> = wb("empty_s_attribute.xlsx");
+    let mut reader = excel.worksheet_cells_reader("Sheet1").unwrap();
+    let (cell, style) = reader.next_cell_with_style().unwrap().unwrap();
+    assert_eq!(cell.get_position(), (0, 0));
+    assert_eq!(style, None);
+}
+
+#[test]
+fn xlsx_cell_reader_returns_formula_records_with_raw_style_indices() {
+    let mut excel: Xlsx<_> = wb("issue_553.xlsx");
+    let mut reader = excel.worksheet_cells_reader("Sheet1").unwrap();
+    let mut records = Vec::new();
+    while let Some(record) = reader.next_cell_with_formula().unwrap() {
+        records.push(record);
+    }
+
+    let mut excel: Xlsx<_> = wb("issue_553.xlsx");
+    let mut reader = excel.worksheet_cells_reader("Sheet1").unwrap();
+    let mut styled_records = Vec::new();
+    while let Some(record) = reader.next_cell_with_formula_and_style().unwrap() {
+        styled_records.push(record);
+    }
+
+    assert_eq!(
+        records,
+        styled_records
+            .iter()
+            .map(|(record, _style)| record.clone())
+            .collect::<Vec<_>>()
+    );
+    let formulas = styled_records
+        .iter()
+        .filter(|(record, _style)| record.formula.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(formulas.len(), 19);
+    assert!(formulas.iter().all(|(_, style)| *style == Some(1)));
+}
+
+#[test]
 fn xlsx_cell_reader_reports_excel_resaved_shared_formula_metadata() {
     let mut excel: Xlsx<_> = wb("shared_formula_simple.xlsx");
     let mut reader = excel.worksheet_cells_reader("Sheet1").unwrap();
