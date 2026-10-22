@@ -166,6 +166,7 @@ struct XlsxCellFormulaMetadataRecordInternal<'a> {
     pos: (u32, u32),
     value: DataRef<'a>,
     formula: Option<FormulaMetadata>,
+    style: Option<usize>,
 }
 
 /// An xlsx Cell Iterator.
@@ -254,6 +255,22 @@ where
 
     /// Return the next cell value in XML stream order.
     pub fn next_cell(&mut self) -> Result<Option<Cell<DataRef<'a>>>, XlsxError> {
+        Ok(self.next_cell_impl()?.map(|(cell, _style)| cell))
+    }
+
+    /// Return the next cell value and raw 0-based index into `styles.xml`
+    /// `<cellXfs>`. The style is not resolved by calamine and is `None` when
+    /// the cell has no `s` attribute or its value is unparsable. This advances
+    /// the same stream as every other `next_*` method; use one per reader.
+    #[allow(clippy::type_complexity)]
+    pub fn next_cell_with_style(
+        &mut self,
+    ) -> Result<Option<(Cell<DataRef<'a>>, Option<usize>)>, XlsxError> {
+        self.next_cell_impl()
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn next_cell_impl(&mut self) -> Result<Option<(Cell<DataRef<'a>>, Option<usize>)>, XlsxError> {
         loop {
             self.buf.clear();
             match self.xml.read_event_into(&mut self.buf) {
@@ -269,6 +286,9 @@ where
                 Ok(Event::Start(c_element)) if c_element.local_name().as_ref() == "c" => {
                     let (pos_attr, style_attr, type_attr) =
                         get_attrs!(c_element, "r" => r, "s" => s, "t" => t)?;
+                    let style = style_attr.and_then(|style| {
+                        atoi_simd::parse::<usize, true, false>(style.as_bytes()).ok()
+                    });
                     let pos = if let Some(range) = pos_attr {
                         let (row, col) = get_row_column(range)?;
                         self.col_index = col;
@@ -302,7 +322,7 @@ where
                         }
                     }
                     self.col_index += 1;
-                    return Ok(Some(Cell::new(pos, value)));
+                    return Ok(Some((Cell::new(pos, value), style)));
                 }
                 Ok(Event::End(e)) if e.local_name().as_ref() == "sheetData" => {
                     return Ok(None);
@@ -385,14 +405,30 @@ where
     /// [`Self::next_cell_with_formula_metadata`] when shared-formula metadata is needed.
     pub fn next_cell_with_formula(&mut self) -> Result<Option<XlsxCellFormula<'a>>, XlsxError> {
         Ok(self
-            .next_cell_formula_record_impl(true)?
-            .map(|record| XlsxCellFormula {
-                pos: record.pos,
-                value: record.value,
-                formula: record
-                    .formula
-                    .and_then(|formula| formula.formula_text().map(str::to_string)),
-            }))
+            .next_cell_with_formula_and_style()?
+            .map(|(record, _style)| record))
+    }
+
+    /// Return the next cell record and raw 0-based index into `styles.xml`
+    /// `<cellXfs>`. The style is not resolved by calamine and is `None` when
+    /// the cell has no `s` attribute or its value is unparsable. This advances
+    /// the same stream as every other `next_*` method; use one per reader.
+    pub fn next_cell_with_formula_and_style(
+        &mut self,
+    ) -> Result<Option<(XlsxCellFormula<'a>, Option<usize>)>, XlsxError> {
+        Ok(self.next_cell_formula_record_impl(true)?.map(|record| {
+            let style = record.style;
+            (
+                XlsxCellFormula {
+                    pos: record.pos,
+                    value: record.value,
+                    formula: record
+                        .formula
+                        .and_then(|formula| formula.formula_text().map(str::to_string)),
+                },
+                style,
+            )
+        }))
     }
 
     /// Return the next cell record, exposing cached/literal value plus formula
@@ -430,6 +466,9 @@ where
                 Ok(Event::Start(c_element)) if c_element.local_name().as_ref() == "c" => {
                     let (pos_attr, style_attr, type_attr) =
                         get_attrs!(c_element, "r" => r, "s" => s, "t" => t)?;
+                    let style = style_attr.and_then(|style| {
+                        atoi_simd::parse::<usize, true, false>(style.as_bytes()).ok()
+                    });
                     let pos = if let Some(range) = pos_attr {
                         let (row, col) = get_row_column(range)?;
                         self.col_index = col;
@@ -477,6 +516,7 @@ where
                         pos,
                         value,
                         formula,
+                        style,
                     }));
                 }
                 Ok(Event::End(e)) if e.local_name().as_ref() == "sheetData" => {
